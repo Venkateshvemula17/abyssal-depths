@@ -1,0 +1,131 @@
+version: '3.9'
+
+# ═══════════════════════════════════════════════════════════════
+#  ABYSSAL DEPTHS — Docker Compose
+#  Runs: PostgreSQL, Redis, C++ Game Server, Python AI Service,
+#        Frontend (Nginx), and pgAdmin (dev tool)
+# ═══════════════════════════════════════════════════════════════
+
+networks:
+  dungeon-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+
+services:
+
+  # ─── PostgreSQL ──────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: dungeon-postgres
+    restart: unless-stopped
+    networks: [dungeon-net]
+    environment:
+      POSTGRES_DB:       dungeon_db
+      POSTGRES_USER:     dungeon
+      POSTGRES_PASSWORD: secret
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dungeon -d dungeon_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Redis ───────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: dungeon-redis
+    restart: unless-stopped
+    networks: [dungeon-net]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── C++ Game Server ─────────────────────────────────────────
+  cpp-server:
+    build:
+      context: ./backend-cpp
+      dockerfile: Dockerfile
+    container_name: dungeon-cpp-server
+    restart: unless-stopped
+    networks: [dungeon-net]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://dungeon:secret@postgres:5432/dungeon_db
+      REDIS_HOST:   redis
+      WS_PORT:      "9001"
+      API_PORT:     "8080"
+    ports:
+      - "9001:9001"   # WebSocket
+      - "8080:8080"   # REST API
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ─── Python AI Service ───────────────────────────────────────
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    container_name: dungeon-ai
+    restart: unless-stopped
+    networks: [dungeon-net]
+    depends_on:
+      - cpp-server
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ─── Frontend (Nginx) ────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend-web
+      dockerfile: Dockerfile
+    container_name: dungeon-frontend
+    restart: unless-stopped
+    networks: [dungeon-net]
+    depends_on:
+      - cpp-server
+      - ai-service
+    ports:
+      - "80:80"
+      - "443:443"
+
+  # ─── pgAdmin (Dev Tool) ──────────────────────────────────────
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: dungeon-pgadmin
+    restart: unless-stopped
+    networks: [dungeon-net]
+    depends_on: [postgres]
+    environment:
+      PGADMIN_DEFAULT_EMAIL:    admin@dungeon.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    profiles: [dev]   # Only starts with: docker compose --profile dev up

@@ -1,0 +1,39 @@
+# ── Stage 1: Build ──────────────────────────────────────────
+FROM ubuntu:24.04 AS builder
+
+RUN apt-get update && apt-get install -y \
+    build-essential cmake git \
+    libpqxx-dev libhiredis-dev \
+    libssl-dev zlib1g-dev \
+    nlohmann-json3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uWebSockets
+RUN git clone --depth 1 https://github.com/uNetworking/uWebSockets /tmp/uws \
+    && cd /tmp/uws && make && make install
+
+# Install cpp-httplib (header-only)
+RUN curl -L https://github.com/yhirose/cpp-httplib/releases/latest/download/httplib.h \
+    -o /usr/local/include/httplib.h
+
+WORKDIR /app
+COPY . .
+
+RUN mkdir build && cd build \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release \
+    && make -j$(nproc)
+
+# ── Stage 2: Runtime ────────────────────────────────────────
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y \
+    libpqxx-7.9 libhiredis1.1.0 \
+    libssl3 curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder /app/build/dungeon_server .
+
+EXPOSE 8080 9001
+
+CMD ["./dungeon_server"]
