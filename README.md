@@ -1,2 +1,1 @@
 # abyssal-depths
-About game
